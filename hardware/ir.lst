@@ -1,0 +1,34 @@
+eeschema (2013-07-07 BZR 4022)-stable  >> Creation date: 18.02.2017 19:40:07
+#Cmp ( порядок = Обозначение )
+| ??1        TSOP1836    
+| C1         C           
+| C2         C           
+| C3         C           
+| C4         CP1         
+| D1         LED         
+| D2         LED         
+| IC1        ATMEGA8A-P  
+| J1         USB         
+| P1         CONN_8      
+| R1         R           
+| SW1        SW_PUSH     
+| X1         CRYSTAL     
+#End Cmp
+
+#Cmp ( порядок = Значение )
+| TSOP1836     ??1       
+| C            C1        
+| C            C2        
+| C            C3        
+| CP1          C4        
+| LED          D1        
+| LED          D2        
+| ATMEGA8A-P   IC1       
+| USB          J1        
+| CONN_8       P1        
+| R            R1        
+| SW_PUSH      SW1       
+| CRYSTAL      X1        
+#End Cmp
+
+#End List

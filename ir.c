@@ -82,19 +82,9 @@
 */
 #define EE_UPDATE_TIME (3 * SOFTCLOCK_FREQ) /* ca. 3 seconds */
 
-/*
-* Timer1 overflow interrupt will be called with F_CPU / 2048
-* frequency.  This interrupt routine further divides that value,
-* resulting in an internal update interval of approx. 10 ms.
-* (The complicated looking scaling by 10 / addition of 9 is
-* poor man's fixed-point rounding algorithm...)
-*/
-#define TMR1_SCALE ((F_CPU * 10) / (2048UL * SOFTCLOCK_FREQ) + 9) / 10
-
-#define IRLED_FREQ 38000 // must be beetween 15625 - 4000000 with 8MHz CPU and prescaler 1
+#define IRLED_FREQ 38000 // must be  with 12MHz CPU and prescaler 1
 #define TMR2_OCR F_CPU/2/IRLED_FREQ - 1
 
-/* Part 2: Variable definitions */
 
 /*
 * Bits that are set inside interrupt routines, and watched outside in

@@ -1,38 +1,37 @@
+/* Name: main.c
+ * Project: hid-data, example how to use HID for data transfer
+ * Author: Christian Starkjohann
+ * Creation Date: 2008-04-11
+ * Tabsize: 4
+ * Copyright: (c) 2008 by OBJECTIVE DEVELOPMENT Software GmbH
+ * License: GNU GPL v2 (see License.txt), GNU GPL v3 or proprietary (CommercialLicense.txt)
+ */
+
 /*
-* ----------------------------------------------------------------------------
-* "THE BEER-WARE LICENSE" (Revision 42):
-* <joerg@FreeBSD.ORG> wrote this file.  As long as you retain this notice you
-* can do whatever you want with this stuff. If we meet some day, and you think
-* this stuff is worth it, you can buy me a beer in return.        Joerg Wunsch
-* ----------------------------------------------------------------------------
-*
-* More advanced AVR demonstration.  Controls a LED attached to OCR1A.
-* The brightness of the LED is controlled with the PWM.  A number of
-* methods are implemented to control that PWM.
-*
-* $Id: largedemo.c,v 1.3 2007/01/19 22:17:10 joerg_wunsch Exp $
+This example should run on most AVRs with only little changes. No special
+hardware resources except INT1 are used. You may have to change usbconfig.h for
+different I/O pins for USB. Please note that USB D+ must be the INT1 pin, or
+at least be connected to INT1 as well.
 */
 
-#include <stdint.h>
-#include <stdlib.h>
-
-#include <avr/eeprom.h>
-#include <avr/interrupt.h>
 #include <avr/io.h>
-#include <avr/pgmspace.h>
-#include <avr/sleep.h>
-#include <avr/wdt.h>
 
-/* Part 1: Macro definitions */
+#include <avr/wdt.h>
+#include <avr/interrupt.h>  /* for sei() */
+#include <util/delay.h>     /* for _delay_ms() */
+#include <avr/eeprom.h>
+#include <avr/pgmspace.h>   /* required by usbdrv.h */
+#include "usbdrv.h"
+
 
 #define IRLED_PORT PORTB
 #define IRLED_DDR  DDRB
-#define IRLED_OUT  PB3
+#define IRLED_OUT  PB1
 
 #define IRREC_PORT PORTD
 #define IRREC_DDR  DDRD
 #define IRREC_PIN  PIND
-#define IRREC_IN   PD2
+#define IRREC_IN   PD3
 
 #if defined(__AVR_ATmega16__)
 #  define PWMDDR     DDRD
@@ -70,21 +69,8 @@
 #  define MCUCSR  MCUSR
 #endif
 
-
-
-#define F_CPU 8000000UL	/* CPU clock in Hertz */
-
-#define SOFTCLOCK_FREQ 1000000	/* internal software clock */
-
-/*
-* Timeout to wait after last PWM change till updating the EEPROM.
-* Measured in internal clock ticks (approx. 100 Hz).
-*/
-#define EE_UPDATE_TIME (3 * SOFTCLOCK_FREQ) /* ca. 3 seconds */
-
 #define IRLED_FREQ 38000 // must be  with 12MHz CPU and prescaler 1
-#define TMR2_OCR F_CPU/2/IRLED_FREQ - 1
-
+#define TMR1_OCR F_CPU/2/IRLED_FREQ - 1
 
 /*
 * Bits that are set inside interrupt routines, and watched outside in
@@ -94,7 +80,7 @@ volatile struct
 {
 	uint8_t tmr_int: 1;
 	uint8_t rx_int: 1;
-	uint8_t int0_int: 1;
+	uint8_t int1_int: 1;
 	uint8_t irtx_int: 1;
 }
 intflags;
@@ -107,57 +93,20 @@ volatile enum
 	MODE_IDLE
 } __attribute__((packed)) mode = MODE_IDLE;
 
-/*
-* Last character read from the UART.
-*/
-volatile char rxbuff;
-volatile char cha;
-
 #define IRMAX 200
 volatile uint16_t ovfarr[IRMAX];
 volatile int8_t arr[IRMAX];
 volatile int16_t iarr = 0;
 volatile uint16_t ovf_count=0;
 
-/*
-* Where to store the PWM value in EEPROM.  This is used in order
-* to remember the value across a RESET or power cycle.
-*/
-uint16_t ee_pwm __attribute__((section(".eeprom"))) = 42;
-
-/*
-* Current value of the PWM.
-*/
-int16_t pwm;
-
-uint16_t tcnt;
-
-/*
-* EEPROM backup timer.  Bumped by the PWM update routine.  If it
-* expires, the current PWM value will be written to EEPROM.
-*/
-int16_t pwm_backup_tmr;
-
-/*
-* Mirror of the MCUCSR register, taken early during startup.
-*/
-uint8_t mcucsr __attribute__((section(".noinit")));
-
-/* Part 3: Interrupt service routines */
-
-ISR(TIMER1_OVF_vect)
-{
-
-}
-
-ISR(TIMER2_COMP_vect)
+ISR(TIMER1_COMPA_vect)
 {
 	if(mode == MODE_RECIEVING)
 	{
 		if(++ovf_count == 0)
 		{
 			ovfarr[iarr] = 0;
-			intflags.int0_int = 1;
+			intflags.int1_int = 1;
 		}
 	}
 	if(mode == MODE_TRANSMIT)
@@ -167,16 +116,16 @@ ISR(TIMER2_COMP_vect)
 			++iarr;
 			if(0 == (ovf_count = ovfarr[iarr]))
 			{
-				TCCR2 &= ~_BV(COM20);
+				TCCR1A &= ~_BV(COM1A0);
 				mode = MODE_IDLE;
 				intflags.irtx_int = 1;
 			}
 			else
 			{
 				if(arr[iarr] == 0)
-					TCCR2 |= _BV(COM20);
+					TCCR1A |= _BV(COM1A0);
 				else 
-					TCCR2 &= ~_BV(COM20);
+					TCCR1A &= ~_BV(COM1A0);
 			}
 		}
 		--ovf_count;
@@ -184,7 +133,7 @@ ISR(TIMER2_COMP_vect)
 	
 }
 
-ISR(INT0_vect)
+ISR(INT1_vect)
 {
 	if(mode == MODE_WAIT_RECIEVE)
 	{
@@ -202,50 +151,94 @@ ISR(INT0_vect)
 		}
 		if(iarr == (IRMAX-1))
 		{
-			intflags.int0_int = 1;
+			intflags.int1_int = 1;
 		}
 	}
 }
 
 
-/*
-* UART receive interrupt.  Fetch the character received and buffer
-* it, unless there was a framing error.  Note that the main loop
-* checks the received character only once per 10 ms.
-*/
-ISR(USART_RXC_vect)
-{
-	uint8_t c;
+/* ------------------------------------------------------------------------- */
+/* ----------------------------- USB interface ----------------------------- */
+/* ------------------------------------------------------------------------- */
 
-	c = UDR;
-	if (bit_is_clear(UCSRA, FE))
-	{
-		rxbuff = c;
-		intflags.rx_int = 1;
-	}
+PROGMEM const char usbHidReportDescriptor[22] = {    /* USB report descriptor */
+    0x06, 0x00, 0xff,              // USAGE_PAGE (Generic Desktop)
+    0x09, 0x01,                    // USAGE (Vendor Usage 1)
+    0xa1, 0x01,                    // COLLECTION (Application)
+    0x15, 0x00,                    //   LOGICAL_MINIMUM (0)
+    0x26, 0xff, 0x00,              //   LOGICAL_MAXIMUM (255)
+    0x75, 0x08,                    //   REPORT_SIZE (8)
+    0x95, 0x80,                    //   REPORT_COUNT (128)
+    0x09, 0x00,                    //   USAGE (Undefined)
+    0xb2, 0x02, 0x01,              //   FEATURE (Data,Var,Abs,Buf)
+    0xc0                           // END_COLLECTION
+};
+/* Since we define only one feature report, we don't use report-IDs (which
+ * would be the first byte of the report). The entire report consists of 128
+ * opaque data bytes.
+ */
+
+/* The following variables store the status of the current data transfer */
+static uchar    currentAddress;
+static uchar    bytesRemaining;
+
+/* ------------------------------------------------------------------------- */
+
+/* usbFunctionRead() is called when the host requests a chunk of data from
+ * the device. For more information see the documentation in usbdrv/usbdrv.h.
+ */
+uchar   usbFunctionRead(uchar *data, uchar len)
+{
+    if(len > bytesRemaining)
+        len = bytesRemaining;
+    eeprom_read_block(data, (uchar *)0 + currentAddress, len);
+    currentAddress += len;
+    bytesRemaining -= len;
+    return len;
 }
 
-/* Part 4: Auxiliary functions */
-
-/*
-* Read out and reset MCUCSR early during startup.
-*/
-void handle_mcucsr(void)
-__attribute__((section(".init3")))
-__attribute__((naked));
-void handle_mcucsr(void)
+/* usbFunctionWrite() is called when the host sends a chunk of data to the
+ * device. For more information see the documentation in usbdrv/usbdrv.h.
+ */
+uchar   usbFunctionWrite(uchar *data, uchar len)
 {
-	mcucsr = MCUCSR;
-	MCUCSR = 0;
+    if(bytesRemaining == 0)
+        return 1;               /* end of transfer */
+    if(len > bytesRemaining)
+        len = bytesRemaining;
+    eeprom_write_block(data, (uchar *)0 + currentAddress, len);
+    currentAddress += len;
+    bytesRemaining -= len;
+    return bytesRemaining == 0; /* return 1 if this was the last chunk */
 }
 
-/*
-* Do all the startup-time peripheral initializations.
-*/
+/* ------------------------------------------------------------------------- */
+
+usbMsgLen_t usbFunctionSetup(uchar data[8])
+{
+usbRequest_t    *rq = (void *)data;
+
+    if((rq->bmRequestType & USBRQ_TYPE_MASK) == USBRQ_TYPE_CLASS){    /* HID class request */
+        if(rq->bRequest == USBRQ_HID_GET_REPORT){  /* wValue: ReportType (highbyte), ReportID (lowbyte) */
+            /* since we have only one report type, we can ignore the report-ID */
+            bytesRemaining = 128;
+            currentAddress = 0;
+            return USB_NO_MSG;  /* use usbFunctionRead() to obtain data */
+        }else if(rq->bRequest == USBRQ_HID_SET_REPORT){
+            /* since we have only one report type, we can ignore the report-ID */
+            bytesRemaining = 128;
+            currentAddress = 0;
+            return USB_NO_MSG;  /* use usbFunctionWrite() to receive data from host */
+        }
+    }else{
+        /* ignore vendor type requests, we don't use any */
+    }
+    return 0;
+}
+
 static void
 ioinit(void)
 {
-	uint16_t pwm_from_eeprom;
 
 	/*
 * Set up the 16-bit timer 1.
@@ -270,205 +263,56 @@ CS12	CS11	CS10	Description
 1		1		1		External clock source on T1 pin. Clock on rising edge.
 */
 	//  TCCR1A = _BV(WGM10) | _BV(WGM11) | _BV(COM1A1) | _BV(COM1A0);
-	TCCR1B =  _BV(CS11);
-	OCR1A = 0;			/* set PWM value to 0 */
 
-	OCR2 = TMR2_OCR;
-	TCCR2 = _BV(WGM21) | _BV(CS20); // Timer2 in CTC mode, toggle OC2 Compare Match, start with no prescaling
+//	TCCR1A = _BV();
+	TCCR1B = _BV(WGM21) | _BV(CS10) | _BV(WGM13) | _BV(WGM12); // Timer1 in CTC mode, toggle OC2 Compare Match, start with no prescaling
+	OCR1A = TMR1_OCR;
 	
-	//Enable INT0
+	//Enable INT1
 	MCUCR = _BV(ISC00);
-	GICR = _BV(INT0);
+	GICR = _BV(INT1);
 
 	IRLED_DDR = _BV(IRLED_OUT);
 
 	IRREC_PORT |= _BV(IRREC_IN);
-	/*
-* As the location of OC1A differs between supported MCU types, we
-* enable that output separately here.  Note that the DDRx register
-* *might* be the same as CONTROL_DDR above, so make sure to not
-* clobber it.
-*/
-	PWMDDR |= _BV(PWMOUT);
-
-	UCSRA = _BV(U2X);		/* improves baud rate error @ F_CPU = 1 MHz */
-	UCSRB = _BV(TXEN)|_BV(RXEN)|_BV(RXCIE); /* tx/rx enable, rx complete intr */
-	UBRRL = (F_CPU / (8 * 9600UL)) - 1;  /* 9600 Bd */
 
 
-	TIMSK = _BV(TOIE1) | _BV(OCIE2);
-	sei();			/* enable interrupts */
+	TIMSK =  _BV(OCIE1A);
 
-	/*
-* Enable the watchdog with the largest prescaler.  Will cause a
-* watchdog reset after approximately 2 s @ Vcc = 5 V
-*/
-	wdt_enable(WDTO_2S);
 
-	/*
-* Read the value from EEPROM.  If it is not 0xffff (erased cells),
-* use it as the starting value for the PWM.
-*/
-	if ((pwm_from_eeprom = eeprom_read_word(&ee_pwm)) != 0xffff)
-	OCR1A = (pwm = pwm_from_eeprom);
 }
 
-/*
-* Some simple UART IO functions.
-*/
+/* ------------------------------------------------------------------------- */
 
-/*
-* Send character c down the UART Tx, wait until tx holding register
-* is empty.
-*/
-static void
-putchr(char c)
+int main(void)
 {
+uchar   i;
 
-	loop_until_bit_is_set(UCSRA, UDRE);
-	UDR = c;
+    wdt_enable(WDTO_1S);
+    /* Even if you don't use the watchdog, turn it off here. On newer devices,
+     * the status of the watchdog (on/off, period) is PRESERVED OVER RESET!
+     */
+    /* RESET status: all port bits are inputs without pull-up.
+     * That's the way we need D+ and D-. Therefore we don't need any
+     * additional hardware initialization.
+     */
+    ioinit();
+    usbInit();
+    usbDeviceDisconnect();  /* enforce re-enumeration, do this while interrupts are disabled! */
+    i = 0;
+    while(--i){             /* fake USB disconnect for > 250 ms */
+        wdt_reset();
+        _delay_ms(1);
+    }
+    usbDeviceConnect();
+    iarr=0;
+    mode = MODE_WAIT_RECIEVE;
+    sei();
+    for(;;){                /* main event loop */
+        wdt_reset();
+        usbPoll();
+    }
+    return 0;
 }
 
-/*
-* Send a C (NUL-terminated) string down the UART Tx.
-*/
-static void
-printstr(const char *s)
-{
-
-	while (*s)
-	{
-		if (*s == '\n')
-		putchr('\r');
-		putchr(*s++);
-	}
-}
-
-/*
-* Same as above, but the string is located in program memory,
-* so "lpm" instructions are needed to fetch it.
-*/
-static void
-printstr_p(const char *s)
-{
-	char c;
-
-	for (c = pgm_read_byte(s); c; ++s, c = pgm_read_byte(s))
-	{
-		if (c == '\n')
-		putchr('\r');
-		putchr(c);
-	}
-}
-
-
-/* Part 5: main() */
-
-int
-main(void)
-{
-	int8_t i;
-	ioinit();
-
-	if ((mcucsr & _BV(WDRF)) == _BV(WDRF))
-	printstr_p(PSTR("\nOoops, the watchdog bit me!"));
-
-	printstr_p(PSTR("\nHello, this is the avr-gcc/libc "
-	"demo running on an "
-#if defined(__AVR_ATmega16__)
-	"ATmega16"
-#elif defined(__AVR_ATmega8__)
-	"ATmega8"
-#elif defined(__AVR_ATmega48__)
-	"ATmega48"
-#elif defined(__AVR_ATmega88__)
-	"ATmega88"
-#elif defined(__AVR_ATmega168__)
-	"ATmega168"
-#elif defined(__AVR_ATtiny2313__)
-	"ATtiny2313"
-#else
-	"unknown AVR"
-#endif
-	"\n"));
-
-	for (;;)
-	{
-		wdt_reset();
-		if (intflags.irtx_int)
-		{		
-				intflags.irtx_int = 0;
-				char s[8];
-				printstr_p(PSTR("\n"));
-				itoa(iarr, s, 10);
-				printstr(s);
-				printstr_p(PSTR(" sequences transmited\n"));
-		}
-		if (intflags.int0_int)
-		{
-			intflags.int0_int = 0;
-/*			char s[8];
-			for(i = 0; i<iarr; i++)
-			{
-				printstr_p(PSTR("\n"));
-				itoa(i, s, 10);
-				printstr(s);
-				printstr_p(PSTR(" "));
-
-				itoa(arr[i], s, 10);
-				printstr(s);
-				printstr_p(PSTR(" "));
-
-				utoa(ovfarr[i], s, 10);
-				printstr(s);
-				printstr_p(PSTR(" "));
-
-			}
-*/			for(i = 4; i<iarr; i++)
-			{
-				if(arr[i] == 0)
-					continue;
-				if(ovfarr[i] > 200)
-					printstr_p(PSTR("X"));
-				else if(ovfarr[i] > 100)
-					printstr_p(PSTR("1"));
-				else
-					printstr_p(PSTR("0"));
-				if(!((i-2)%8))
-					printstr_p(PSTR(" "));
-			}
-			mode = MODE_IDLE;
-			/////////////////test
-			//printstr_p(PSTR("\nWaiting for IR signal\n"));
-			//iarr=0;
-			//mode = MODE_WAIT_RECIEVE;
-			/////////////////////test
-		}
-		if (intflags.rx_int)
-		{
-			intflags.rx_int = 0;
-
-			switch (rxbuff)
-			{
-			case 'r':
-				printstr_p(PSTR("\nWaiting for IR signal\n"));
-				iarr=0;
-				mode = MODE_WAIT_RECIEVE;
-				break;
-			case 't':
-				printstr_p(PSTR("\nTransmitting...\n"));
-				iarr=-1;
-				ovf_count = 0;
-				mode = MODE_TRANSMIT;
-				break;
-
-			case 'z':
-				printstr_p(PSTR("\nzzzz... zzz..."));
-				for (;;)
-				;
-			}
-		
-		}
-		//      sleep_mode();
-	}
-}
+/* ------------------------------------------------------------------------- */
